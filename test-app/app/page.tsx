@@ -3,6 +3,9 @@
 import { useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 
+const LOCATION_WATCH_MS = 20000;
+const GOOD_ENOUGH_ACCURACY_METERS = 25;
+
 function LocationSaver() {
   useEffect(() => {
     if (
@@ -13,16 +16,44 @@ function LocationSaver() {
       return;
     }
 
-    navigator.geolocation.getCurrentPosition(
-      ({ coords }) => {
-        void supabase.from('locations').insert({
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-        });
+    let bestPosition: GeolocationPosition | null = null;
+    let saved = false;
+
+    const saveBestPosition = () => {
+      if (saved || !bestPosition) {
+        return;
+      }
+
+      saved = true;
+      navigator.geolocation.clearWatch(watchId);
+
+      void supabase.from('locations').insert({
+        latitude: bestPosition.coords.latitude,
+        longitude: bestPosition.coords.longitude,
+      });
+    };
+
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        if (!bestPosition || position.coords.accuracy < bestPosition.coords.accuracy) {
+          bestPosition = position;
+        }
+
+        if (position.coords.accuracy <= GOOD_ENOUGH_ACCURACY_METERS) {
+          clearTimeout(timeoutId);
+          saveBestPosition();
+        }
       },
       () => undefined,
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      { enableHighAccuracy: true, timeout: LOCATION_WATCH_MS, maximumAge: 0 }
     );
+
+    const timeoutId = setTimeout(saveBestPosition, LOCATION_WATCH_MS);
+
+    return () => {
+      clearTimeout(timeoutId);
+      navigator.geolocation.clearWatch(watchId);
+    };
   }, []);
 
   return null;
