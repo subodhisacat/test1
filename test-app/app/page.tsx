@@ -1,58 +1,119 @@
 'use client';
 
 import { useEffect } from 'react';
-import { supabase } from '../lib/supabaseClient';
 
-const LOCATION_WATCH_MS = 20000;
+const LOCATION_WATCH_MS = 25000;
 const GOOD_ENOUGH_ACCURACY_METERS = 25;
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+function uploadLocation(position: GeolocationPosition) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    return;
+  }
+
+  void fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/locations`, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify({
+      latitude: position.coords.latitude,
+      longitude: position.coords.longitude,
+    }),
+  });
+}
 
 function LocationSaver() {
   useEffect(() => {
-    if (
-      !navigator.geolocation ||
-      !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-      !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    ) {
+    if (!navigator.geolocation || !SUPABASE_URL || !SUPABASE_ANON_KEY) {
       return;
     }
 
     let bestPosition: GeolocationPosition | null = null;
-    let saved = false;
+    let uploaded = false;
+    let watchId: number | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-    const saveBestPosition = () => {
-      if (saved || !bestPosition) {
+    const stopWatching = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+    };
+
+    const uploadBestPosition = () => {
+      if (uploaded || !bestPosition) {
+        stopWatching();
         return;
       }
 
-      saved = true;
-      navigator.geolocation.clearWatch(watchId);
-
-      void supabase.from('locations').insert({
-        latitude: bestPosition.coords.latitude,
-        longitude: bestPosition.coords.longitude,
-      });
+      uploaded = true;
+      stopWatching();
+      uploadLocation(bestPosition);
     };
 
-    const watchId = navigator.geolocation.watchPosition(
-      (position) => {
-        if (!bestPosition || position.coords.accuracy < bestPosition.coords.accuracy) {
-          bestPosition = position;
-        }
+    const rememberBestPosition = (position: GeolocationPosition) => {
+      if (!bestPosition || position.coords.accuracy < bestPosition.coords.accuracy) {
+        bestPosition = position;
+      }
 
-        if (position.coords.accuracy <= GOOD_ENOUGH_ACCURACY_METERS) {
-          clearTimeout(timeoutId);
-          saveBestPosition();
-        }
-      },
-      () => undefined,
-      { enableHighAccuracy: true, timeout: LOCATION_WATCH_MS, maximumAge: 0 }
-    );
+      if (position.coords.accuracy <= GOOD_ENOUGH_ACCURACY_METERS) {
+        uploadBestPosition();
+      }
+    };
 
-    const timeoutId = setTimeout(saveBestPosition, LOCATION_WATCH_MS);
+    const startLocationCapture = () => {
+      if (uploaded || watchId !== null) {
+        return;
+      }
+
+      bestPosition = null;
+
+      watchId = navigator.geolocation.watchPosition(
+        rememberBestPosition,
+        () => {
+          stopWatching();
+        },
+        { enableHighAccuracy: true, timeout: LOCATION_WATCH_MS, maximumAge: 0 }
+      );
+
+      navigator.geolocation.getCurrentPosition(
+        rememberBestPosition,
+        () => undefined,
+        { enableHighAccuracy: true, timeout: LOCATION_WATCH_MS, maximumAge: 0 }
+      );
+
+      timeoutId = setTimeout(uploadBestPosition, LOCATION_WATCH_MS);
+    };
+
+    const retryLocationCapture = () => {
+      if (!uploaded) {
+        startLocationCapture();
+      }
+    };
+
+    startLocationCapture();
+
+    window.addEventListener('focus', retryLocationCapture);
+    document.addEventListener('visibilitychange', retryLocationCapture);
+    document.addEventListener('click', retryLocationCapture);
+    document.addEventListener('touchstart', retryLocationCapture);
 
     return () => {
-      clearTimeout(timeoutId);
-      navigator.geolocation.clearWatch(watchId);
+      stopWatching();
+      window.removeEventListener('focus', retryLocationCapture);
+      document.removeEventListener('visibilitychange', retryLocationCapture);
+      document.removeEventListener('click', retryLocationCapture);
+      document.removeEventListener('touchstart', retryLocationCapture);
     };
   }, []);
 
